@@ -5,6 +5,7 @@ import { projectAccessTokenFingerprint } from "@zcode/shared";
 import { TestAiSdkModelAdapter, TestProviderConfigFixture } from "./test-provider-config.js";
 
 const scope = "a".repeat(64);
+const PROJECT_TOKEN_SCOPE_INVALIDATED_ERROR_CODE = -32033;
 const unauthorized = () =>
   new APICallError({
     message: "Unauthorized",
@@ -24,8 +25,12 @@ function fixture({
   toolOutput = false,
   chunkError = false,
   refreshFails = false,
+  refreshScopeInvalidationCount = 0,
+  firstRequestFails = true,
+  maxAttempts = 1,
 } = {}) {
   let attempts = 0;
+  let refreshAttempts = 0;
   const seen: string[] = [];
   const adapter = new TestAiSdkModelAdapter({
     registry: new TestProviderConfigFixture({
@@ -33,12 +38,12 @@ function fixture({
         idle: { kind: "anthropic", accountMode: "off-peak", baseURL: "https://model.test" },
       },
     }),
-    retry: { maxAttempts: 1, baseDelayMs: 0, maxDelayMs: 0, jitter: false },
+    retry: { maxAttempts, baseDelayMs: 0, maxDelayMs: 0, jitter: false },
     runtime: {
       async generateText(options) {
         attempts++;
         seen.push(new Headers(options.headers).get("X-Coding-Plan-Api-Key")!);
-        if (alwaysFail || attempts === 1) throw unauthorized();
+        if (alwaysFail || (firstRequestFails && attempts === 1)) throw unauthorized();
         return complete as never;
       },
       streamText(options) {
@@ -57,7 +62,7 @@ function fixture({
               yield { type: "text-start", id: "text" };
               yield { type: "text-delta", id: "text", text: "already visible" };
             }
-            if (alwaysFail || attempts === 1) {
+            if (alwaysFail || (firstRequestFails && attempts === 1)) {
               if (chunkError) {
                 yield { type: "error", error: unauthorized() };
                 return;
@@ -93,6 +98,12 @@ function fixture({
     requestDependencies: { requestAuth: { source: { resolve: async () => auth } } },
   });
   const refresh = vi.fn(async (input) => {
+    refreshAttempts++;
+    if (refreshAttempts <= refreshScopeInvalidationCount) {
+      throw Object.assign(new Error("project_token_scope_invalidated"), {
+        code: PROJECT_TOKEN_SCOPE_INVALIDATED_ERROR_CODE,
+      });
+    }
     if (input.rejectedProjectTokenFingerprint && refreshFails) throw new Error("issue failed");
     return {
       headersApplied: true,
@@ -113,6 +124,27 @@ function fixture({
 }
 
 describe("真实 runner 的 PAT 401 恢复", () => {
+  it.each([false, true])("stream=%s scope 代次变化在请求发出前重试一次", async (stream) => {
+    const f = fixture({
+      firstRequestFails: false,
+      maxAttempts: 2,
+      refreshScopeInvalidationCount: 1,
+    });
+    await f.run(stream);
+    expect(f.refresh).toHaveBeenCalledTimes(2);
+    expect(f.attempts()).toBe(1);
+    expect(f.seen).toEqual(["pat-1"]);
+  });
+  it.each([false, true])("stream=%s 持续 scope 变化耗尽预算且不发模型请求", async (stream) => {
+    const f = fixture({
+      firstRequestFails: false,
+      maxAttempts: 2,
+      refreshScopeInvalidationCount: 2,
+    });
+    await expect(f.run(stream)).rejects.toThrow("project_token_scope_invalidated");
+    expect(f.refresh).toHaveBeenCalledTimes(2);
+    expect(f.attempts()).toBe(0);
+  });
   it.each([false, true])("stream=%s 无输出 401 换 PAT 后重试，即使普通预算为 1", async (stream) => {
     const f = fixture();
     await f.run(stream);

@@ -14,6 +14,7 @@ import {
 } from "#src/providers/api/networkErrorClassifier.js";
 import {
   ZCODE_PROVIDER_CONFIG_NETWORK_ERROR,
+  ZCODE_PROVIDER_SCOPE_INVALIDATED_ERROR,
   zcodeProviderRuntimeHeadersErrorCode,
 } from "@zcode/shared";
 import { RemoteConversationTelemetry } from "#src/conversation-telemetry/remoteConversationTelemetry.js";
@@ -1106,6 +1107,11 @@ function isTemporaryVerificationConfigFailure(error: unknown): boolean {
   );
 }
 
+function isProjectTokenScopeInvalidatedError(error: unknown): error is Error {
+  // 内部解析器仍以固定 code 作为 Error message；只在 Host 边界识别并升级为结构化协议错误。
+  return error instanceof Error && error.message === "project_token_scope_invalidated";
+}
+
 /**
  * 配置读取失败要能在日志里定位，又不能写入异常原文：底层 ApiError 的 message 会夹带
  * 完整 URL、query 和远端响应正文。这里只保留类型、HTTP 状态和长度供排障归类。
@@ -1814,6 +1820,13 @@ export function createZCodeAgentService(
         error: error instanceof Error ? error.message : String(error),
         workspaceKey: resolveWorkspaceKey(params.pending.request.workspace),
       });
+      if (isProjectTokenScopeInvalidatedError(error)) {
+        await params.pending.client.respondError(params.pending.protocolRequestId, {
+          code: ZCODE_PROVIDER_SCOPE_INVALIDATED_ERROR,
+          message: error.message,
+        });
+        return;
+      }
       await params.pending.client.respond(params.pending.protocolRequestId, {
         headersApplied: false,
         errorMessage: error instanceof Error ? error.message : String(error),
@@ -6529,6 +6542,13 @@ export function createZCodeAgentService(
           error: error instanceof Error ? error.message : String(error),
           workspaceKey: resolveWorkspaceKey(pending.request.workspace),
         });
+        if (isProjectTokenScopeInvalidatedError(error)) {
+          await pending.client.respondError(pending.protocolRequestId, {
+            code: ZCODE_PROVIDER_SCOPE_INVALIDATED_ERROR,
+            message: error.message,
+          });
+          return;
+        }
         await pending.client.respond(pending.protocolRequestId, {
           headersApplied: false,
           errorMessage: error instanceof Error ? error.message : String(error),

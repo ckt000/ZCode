@@ -2945,6 +2945,8 @@ export type ZCodeProviderRuntimeHeadersCancelled = z.infer<
 
 // 标准 JSON-RPC error 保留旧版 schema 兼容，不向严格校验的 response 增加字段。
 export const ZCODE_PROVIDER_CONFIG_NETWORK_ERROR = -32032;
+/** 当前账号 scope 在凭据解析期间换代；调用方可在重新解析后重试。 */
+export const ZCODE_PROVIDER_SCOPE_INVALIDATED_ERROR = -32033;
 
 export const zcodeProviderRuntimeHeadersErrorCode = {
   configNetwork: "request_verification_config_network",
